@@ -336,7 +336,7 @@
        * -------------------------------------------------------- */
 
       /** Parse the editor's Markdown and (re)draw the mind map. */
-      function render() {
+      async function render() {
         const md = els.input.value.trim();
         updateCharCount();
 
@@ -354,13 +354,14 @@
           const options = LAYOUT_PRESETS[currentLayout];
 
           if (!mm) {
+            // create() renders and fits itself with the data it's given
             mm = Markmap.create(els.svg, options, root);
-            // Re-fit on the next frame: at creation time the flex layout may
-            // not have settled yet, which can leave branches off-screen.
-            requestAnimationFrame(() => mm && mm.fit());
           } else {
-            mm.setData(root, options);
-            mm.fit();
+            // setData is async — fitting before it resolves computes the
+            // viewport transform from a stale layout and leaves the map
+            // cut off, so both steps must be awaited in order.
+            await mm.setData(root, options);
+            await mm.fit();
           }
         } catch (err) {
           console.error('Mind map render failed:', err);
@@ -563,18 +564,25 @@
         }
       });
 
-      // Re-render the map whenever the canvas panel's size actually changes.
-      // A ResizeObserver (rather than window 'resize') also catches the case
-      // where Tailwind's runtime-generated CSS lands *after* the first
-      // render: the panel then changes shape under Markmap, whose layout was
-      // computed against the old geometry. A plain mm.fit() is NOT enough to
-      // recover from that (its internal rect is stale) — a full re-render
-      // recomputes node measurements against the real panel size.
+      // Re-fit the map whenever the canvas panel's size actually changes.
+      // A ResizeObserver (rather than window 'resize') also catches panel
+      // reshapes that aren't window resizes — e.g. Tailwind's runtime CSS
+      // landing after the first render. A fit (not a re-render) suffices:
+      // Markmap measures nodes in an off-DOM container, so its layout never
+      // depends on panel size — only the viewport transform does — and
+      // fitting preserves any branches the user has folded.
       let resizeTimer = null;
       new ResizeObserver(() => {
         clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => mm && render(), 150);
+        resizeTimer = setTimeout(() => mm && mm.fit(), 150);
       }).observe(els.svg);
+
+      // If the page loads in a background tab, browsers freeze
+      // requestAnimationFrame, so d3's fit transition can't run until the
+      // tab is shown — re-fit on reveal so the map always lands centered.
+      document.addEventListener('visibilitychange', () => {
+        if (!document.hidden && mm) mm.fit();
+      });
 
       /* ----------------------------------------------------------
        * 8. BOOT
