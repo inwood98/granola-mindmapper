@@ -563,12 +563,16 @@
         }
       });
 
-      // Re-fit the map when the window is resized (e.g. rotating a phone)
+      // Re-fit the map whenever the canvas panel's size actually changes.
+      // A ResizeObserver (rather than window 'resize') also catches the case
+      // where Tailwind's runtime-generated CSS lands *after* the first render
+      // — without this, the initial map is laid out against a zero-height
+      // panel and ends up squashed into a corner.
       let resizeTimer = null;
-      window.addEventListener('resize', () => {
+      new ResizeObserver(() => {
         clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => mm && mm.fit(), 200);
-      });
+        resizeTimer = setTimeout(() => mm && mm.fit(), 150);
+      }).observe(els.svg);
 
       /* ----------------------------------------------------------
        * 8. BOOT
