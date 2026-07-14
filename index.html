@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Granola Mindmapper — Meeting Notes to Mind Maps</title>
+  <meta name="description" content="Convert Granola.ai meeting notes (Markdown) into interactive, exportable mind maps. Runs 100% in your browser." />
+
+  <!-- ============================================================
+       DEPENDENCIES (all CDN — no build step, GitHub Pages friendly)
+       - Tailwind CSS (Play CDN) for styling
+       - D3 (required by markmap-view)
+       - markmap-lib  : Markdown -> mind map data structure
+       - markmap-view : data structure -> interactive SVG
+       ============================================================ -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markmap-lib@0.17"></script>
+  <script src="https://cdn.jsdelivr.net/npm/markmap-view@0.17"></script>
+
+  <!-- Tailwind configuration: Granola-inspired dark palette -->
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            // Near-black canvas with warm neutrals, like Granola's dark UI
+            ink: {
+              950: '#0c0c0e',
+              900: '#121215',
+              850: '#17171b',
+              800: '#1e1e23',
+              700: '#2a2a31',
+              600: '#3a3a42',
+            },
+            cream: '#f5f0e8',
+            accent: {
+              DEFAULT: '#e8b64c', // warm amber accent
+              soft: '#f0cd85',
+            },
+          },
+          fontFamily: {
+            sans: ['ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'sans-serif'],
+            mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Consolas', 'monospace'],
+          },
+        },
+      },
+    };
+  </script>
+
+  <!-- Custom CSS: things Tailwind utilities can't easily express -->
+  <style>
+    /* Subtle dotted-grid backdrop behind the mind map canvas */
+    #map-panel {
+      background-image: radial-gradient(circle, rgba(245, 240, 232, 0.05) 1px, transparent 1px);
+      background-size: 22px 22px;
+    }
+
+    /* The Markmap SVG fills its panel; text inherits our theme color */
+    #mindmap {
+      width: 100%;
+      height: 100%;
+      color: #f5f0e8;          /* node label colour (markmap uses currentColor) */
+      font-family: ui-sans-serif, system-ui, sans-serif;
+    }
+    #mindmap .markmap-foreign strong { color: #f0cd85; }   /* bold = accent */
+    #mindmap .markmap-foreign code {
+      background: #1e1e23;
+      border-radius: 4px;
+      padding: 0 4px;
+      font-size: 0.85em;
+    }
+
+    /* Editor textarea: hide the resize grip, style the scrollbar */
+    #md-input { resize: none; }
+    #md-input::-webkit-scrollbar, #map-panel ::-webkit-scrollbar { width: 10px; }
+    #md-input::-webkit-scrollbar-thumb { background: #2a2a31; border-radius: 5px; }
+    #md-input::-webkit-scrollbar-track { background: transparent; }
+
+    /* Toast animation for status messages */
+    .toast-enter { animation: toast-in 0.25s ease-out; }
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateY(8px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+  </style>
+</head>
+
+<body class="bg-ink-950 text-cream font-sans h-screen flex flex-col overflow-hidden antialiased">
+
+  <!-- ============================================================
+       HEADER
+       ============================================================ -->
+  <header class="flex items-center justify-between gap-4 px-4 sm:px-6 py-3 border-b border-ink-700 bg-ink-900 shrink-0">
+    <div class="flex items-center gap-3 min-w-0">
+      <!-- Logo mark -->
+      <div class="w-8 h-8 rounded-lg bg-accent flex items-center justify-center shrink-0">
+        <svg class="w-5 h-5 text-ink-950" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+          <circle cx="5" cy="12" r="2.2" /><circle cx="18" cy="5.5" r="2.2" /><circle cx="18" cy="18.5" r="2.2" />
+          <path d="M7 11l8.5-4.5M7 13l8.5 4.5" />
+        </svg>
+      </div>
+      <div class="min-w-0">
+        <h1 class="text-sm sm:text-base font-semibold tracking-tight truncate">Granola Mindmapper</h1>
+        <p class="text-[11px] text-cream/40 truncate hidden sm:block">Paste meeting notes &rarr; get an interactive mind map</p>
+      </div>
+    </div>
+
+    <!-- Global actions -->
+    <div class="flex items-center gap-2 shrink-0">
+      <button id="btn-export-svg" class="btn-secondary" title="Download the mind map as an SVG file">
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
+        <span class="hidden sm:inline">SVG</span>
+      </button>
+      <button id="btn-export-png" class="btn-secondary" title="Download the mind map as a PNG image">
+        <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+        <span class="hidden sm:inline">PNG</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- ============================================================
+       MAIN SPLIT LAYOUT
+       Stacks vertically on mobile, side-by-side from lg: upward
+       ============================================================ -->
+  <main class="flex-1 flex flex-col lg:flex-row min-h-0">
+
+    <!-- ─────────── LEFT PANEL: Markdown editor ─────────── -->
+    <section class="flex flex-col lg:w-[42%] xl:w-[38%] h-1/2 lg:h-auto border-b lg:border-b-0 lg:border-r border-ink-700 bg-ink-900 min-h-0">
+
+      <!-- Editor toolbar -->
+      <div class="flex items-center justify-between px-4 py-2 border-b border-ink-700/70 shrink-0">
+        <div class="flex items-center gap-2">
+          <span class="w-1.5 h-1.5 rounded-full bg-accent"></span>
+          <h2 class="text-xs font-medium uppercase tracking-wider text-cream/50">Markdown Notes</h2>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="btn-example" class="btn-ghost" title="Restore the example Granola note">Example</button>
+          <button id="btn-clear" class="btn-ghost text-red-400/80 hover:text-red-300" title="Clear the workspace">Clear</button>
+        </div>
+      </div>
+
+      <!-- Text input -->
+      <!-- The default example lives in the markup (not injected by JS) so
+           browser form-state restoration on reload never blanks it out. -->
+      <textarea
+        id="md-input"
+        spellcheck="false"
+        placeholder="# Paste your Granola meeting notes here…"
+        class="flex-1 w-full bg-transparent px-4 py-3 font-mono text-[13px] leading-relaxed text-cream/90
+               placeholder:text-cream/25 focus:outline-none min-h-0"># ☕ Product Alignment Sync
+## Context
+- Reviewing Q3 roadmap and feature priorities.
+## Discussion Summary
+- **UI Redesign**: Feedback on current Figma drafts was mixed.
+  - Needs simpler navigation.
+  - Mobile responsive view needs refinement.
+- **Database Migration**: Scheduled for Friday night to minimize downtime.
+## Key Decisions
+- [Decision] Postpone the landing page overhaul to focus on core app performance.
+- [Decision] Sarah owns final sign-off on Figma drafts.
+## Action Items
+- [Sarah] Refine navigation headers by Wednesday.
+- [Dave] Coordinate staging server backup before migration.</textarea>
+
+      <!-- Editor footer -->
+      <div class="flex items-center justify-between gap-3 px-4 py-3 border-t border-ink-700/70 shrink-0">
+        <span id="char-count" class="text-[11px] text-cream/35 tabular-nums">0 chars</span>
+        <button id="btn-generate"
+                class="inline-flex items-center gap-2 rounded-lg bg-accent hover:bg-accent-soft text-ink-950
+                       text-xs font-semibold px-4 py-2 transition-colors"
+                title="Regenerate the mind map (also auto-updates as you type)">
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z"/></svg>
+          Generate Mind Map
+        </button>
+      </div>
+    </section>
+
+    <!-- ─────────── RIGHT PANEL: Mind map canvas ─────────── -->
+    <section id="map-panel" class="relative flex-1 h-1/2 lg:h-auto bg-ink-950 min-h-0">
+
+      <!-- Floating canvas toolbar -->
+      <div class="absolute top-3 left-3 right-3 z-10 flex items-center justify-between gap-2 pointer-events-none">
+        <!-- Layout preset toggle.
+             NOTE: markmap-view renders horizontal (left-to-right) maps only —
+             there is no vertical or radial mode in the library — so this
+             toggle switches between two horizontal layout presets instead:
+             a compact "Mind Map" spread and a spacious "Tree" outline. -->
+        <div class="flex rounded-lg border border-ink-700 bg-ink-900/90 backdrop-blur p-0.5 pointer-events-auto" role="group" aria-label="Layout preset">
+          <button id="btn-layout-map"  class="seg-btn seg-active" title="Compact horizontal mind map layout">Mind Map</button>
+          <button id="btn-layout-tree" class="seg-btn" title="Spacious tree / outline layout">Tree</button>
+        </div>
+
+        <div class="flex items-center gap-2 pointer-events-auto">
+          <button id="btn-fit" class="btn-secondary" title="Fit the whole map in view">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 00-2 2v3m18 0V5a2 2 0 00-2-2h-3m0 18h3a2 2 0 002-2v-3M3 16v3a2 2 0 002 2h3"/></svg>
+            <span class="hidden sm:inline">Fit</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- The Markmap SVG canvas (zoom with scroll, drag to pan, click circles to fold) -->
+      <svg id="mindmap"></svg>
+
+      <!-- Empty state, shown when there is nothing to render -->
+      <div id="empty-state" class="absolute inset-0 hidden flex-col items-center justify-center gap-3 text-cream/30 pointer-events-none">
+        <svg class="w-10 h-10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round">
+          <circle cx="5" cy="12" r="2.2" /><circle cx="18" cy="5.5" r="2.2" /><circle cx="18" cy="18.5" r="2.2" />
+          <path d="M7 11l8.5-4.5M7 13l8.5 4.5" />
+        </svg>
+        <p class="text-sm">Paste Markdown notes to see your mind map</p>
+      </div>
+
+      <!-- Hint bar -->
+      <div class="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 text-[11px] text-cream/30 bg-ink-900/80 backdrop-blur rounded-full px-3 py-1 pointer-events-none hidden sm:block">
+        Scroll to zoom &middot; drag to pan &middot; click a node's circle to fold
+      </div>
+
+      <!-- Toast for status / error messages -->
+      <div id="toast" class="absolute bottom-12 left-1/2 -translate-x-1/2 z-20 hidden text-xs bg-ink-800 border border-ink-600 rounded-lg px-4 py-2 shadow-xl"></div>
+    </section>
+  </main>
+
+  <!-- Shared button styles (kept as CSS classes so the markup stays readable) -->
+  <style>
+    .btn-secondary {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-size: 12px; font-weight: 500;
+      color: rgba(245, 240, 232, 0.75);
+      background: #17171b; border: 1px solid #2a2a31; border-radius: 8px;
+      padding: 6px 10px; transition: all 0.15s ease;
+    }
+    .btn-secondary:hover { background: #1e1e23; color: #f5f0e8; border-color: #3a3a42; }
+    .btn-ghost {
+      font-size: 11px; font-weight: 500;
+      color: rgba(245, 240, 232, 0.5);
+      border-radius: 6px; padding: 4px 8px; transition: all 0.15s ease;
+    }
+    .btn-ghost:hover { background: #1e1e23; color: rgba(245, 240, 232, 0.9); }
+    .seg-btn {
+      font-size: 11px; font-weight: 500;
+      color: rgba(245, 240, 232, 0.5);
+      border-radius: 6px; padding: 5px 12px; transition: all 0.15s ease;
+    }
+    .seg-btn:hover { color: rgba(245, 240, 232, 0.9); }
+    .seg-active { background: #e8b64c; color: #0c0c0e !important; font-weight: 600; }
+  </style>
+
+  <!-- ============================================================
+       APPLICATION LOGIC
+       ============================================================ -->
+  <script>
+    (function () {
+      'use strict';
+
+      /* ----------------------------------------------------------
+       * 1. CONSTANTS & DEFAULT CONTENT
+       * -------------------------------------------------------- */
+
+      // Default example: a typical Granola.ai meeting note template
+      const DEFAULT_MARKDOWN = `# ☕ Product Alignment Sync
+## Context
+- Reviewing Q3 roadmap and feature priorities.
+## Discussion Summary
+- **UI Redesign**: Feedback on current Figma drafts was mixed.
+  - Needs simpler navigation.
+  - Mobile responsive view needs refinement.
+- **Database Migration**: Scheduled for Friday night to minimize downtime.
+## Key Decisions
+- [Decision] Postpone the landing page overhaul to focus on core app performance.
+- [Decision] Sarah owns final sign-off on Figma drafts.
+## Action Items
+- [Sarah] Refine navigation headers by Wednesday.
+- [Dave] Coordinate staging server backup before migration.`;
+
+      // Two layout presets driven by the segmented toggle.
+      // (markmap-view only renders horizontal maps — see note in the markup —
+      //  so the presets vary node spacing / width rather than direction.)
+      const LAYOUT_PRESETS = {
+        map: {   // "Mind Map": compact, balanced spread
+          spacingHorizontal: 80,
+          spacingVertical: 8,
+          paddingX: 12,
+          maxWidth: 260,
+          duration: 350,
+        },
+        tree: {  // "Tree": airy outline with wider gaps between branches
+          spacingHorizontal: 140,
+          spacingVertical: 18,
+          paddingX: 16,
+          maxWidth: 340,
+          duration: 350,
+        },
+      };
+
+      const DEBOUNCE_MS = 350;   // delay before auto-rendering while typing
+      const PNG_SCALE = 2;       // export PNG at 2x for retina sharpness
+      const EXPORT_BG = '#0c0c0e';
+
+      /* ----------------------------------------------------------
+       * 2. DOM REFERENCES
+       * -------------------------------------------------------- */
+
+      const $ = (id) => document.getElementById(id);
+      const els = {
+        input: $('md-input'),
+        svg: $('mindmap'),
+        emptyState: $('empty-state'),
+        charCount: $('char-count'),
+        toast: $('toast'),
+        btnGenerate: $('btn-generate'),
+        btnClear: $('btn-clear'),
+        btnExample: $('btn-example'),
+        btnFit: $('btn-fit'),
+        btnSvg: $('btn-export-svg'),
+        btnPng: $('btn-export-png'),
+        btnLayoutMap: $('btn-layout-map'),
+        btnLayoutTree: $('btn-layout-tree'),
+      };
+
+      /* ----------------------------------------------------------
+       * 3. MARKMAP SETUP & STATE
+       * -------------------------------------------------------- */
+
+      const { Transformer, Markmap } = window.markmap;
+      const transformer = new Transformer();
+
+      let mm = null;               // the Markmap instance (created lazily)
+      let currentLayout = 'map';   // active preset key
+      let debounceTimer = null;
+      let toastTimer = null;
+
+      /* ----------------------------------------------------------
+       * 4. CORE RENDERING
+       * -------------------------------------------------------- */
+
+      /** Parse the editor's Markdown and (re)draw the mind map. */
+      function render() {
+        const md = els.input.value.trim();
+        updateCharCount();
+
+        if (!md) {
+          destroyMap();
+          els.emptyState.classList.remove('hidden');
+          els.emptyState.classList.add('flex');
+          return;
+        }
+        els.emptyState.classList.add('hidden');
+        els.emptyState.classList.remove('flex');
+
+        try {
+          const { root } = transformer.transform(md);
+          const options = LAYOUT_PRESETS[currentLayout];
+
+          if (!mm) {
+            mm = Markmap.create(els.svg, options, root);
+            // Re-fit on the next frame: at creation time the flex layout may
+            // not have settled yet, which can leave branches off-screen.
+            requestAnimationFrame(() => mm && mm.fit());
+          } else {
+            mm.setData(root, options);
+            mm.fit();
+          }
+        } catch (err) {
+          console.error('Mind map render failed:', err);
+          showToast('Could not parse that Markdown — check the console for details.', true);
+        }
+      }
+
+      /** Tear down the current map and blank the SVG. */
+      function destroyMap() {
+        if (mm) {
+          mm.destroy();
+          mm = null;
+        }
+        els.svg.innerHTML = '';
+      }
+
+      /** Debounced render — keeps typing lag-free. */
+      function scheduleRender() {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(render, DEBOUNCE_MS);
+      }
+
+      /* ----------------------------------------------------------
+       * 5. EXPORT (SVG & PNG)
+       * -------------------------------------------------------- */
+
+      /**
+       * Build a standalone SVG string of the current map:
+       * clones the live SVG, freezes its size, and inlines the CSS
+       * that markmap normally injects into the page.
+       */
+      async function buildExportableSvg() {
+        if (!mm) throw new Error('Nothing to export yet.');
+        await mm.fit(); // make sure the whole map is inside the viewport
+
+        const rect = els.svg.getBoundingClientRect();
+        const clone = els.svg.cloneNode(true);
+
+        clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+        clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+        clone.setAttribute('width', Math.round(rect.width));
+        clone.setAttribute('height', Math.round(rect.height));
+
+        // Inline the styles the map depends on. `globalCSS` ships with
+        // markmap-view; the extra rules replicate our dark-theme colours.
+        const css = `
+          ${window.markmap.globalCSS || ''}
+          .markmap { color: #f5f0e8; font: 300 16px/20px ui-sans-serif, system-ui, sans-serif; }
+          .markmap-foreign { color: #f5f0e8; }
+          .markmap-foreign strong { color: #f0cd85; }
+        `;
+        const styleEl = document.createElementNS('http://www.w3.org/2000/svg', 'style');
+        styleEl.textContent = css;
+        clone.insertBefore(styleEl, clone.firstChild);
+
+        // Dark background rectangle so exports aren't transparent-on-white
+        const bg = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+        bg.setAttribute('width', '100%');
+        bg.setAttribute('height', '100%');
+        bg.setAttribute('fill', EXPORT_BG);
+        clone.insertBefore(bg, styleEl.nextSibling);
+
+        return {
+          svgText: new XMLSerializer().serializeToString(clone),
+          width: rect.width,
+          height: rect.height,
+        };
+      }
+
+      /** Trigger a browser download for a Blob. */
+      function downloadBlob(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+
+      /** Derive a filename from the map's root heading. */
+      function exportFilename(ext) {
+        const firstLine = (els.input.value.trim().split('\n')[0] || 'mindmap')
+          .replace(/^#+\s*/, '')
+          .replace(/[^\w\s-]/g, '')
+          .trim()
+          .replace(/\s+/g, '-')
+          .toLowerCase() || 'mindmap';
+        return `${firstLine}.${ext}`;
+      }
+
+      async function exportSvg() {
+        try {
+          const { svgText } = await buildExportableSvg();
+          downloadBlob(new Blob([svgText], { type: 'image/svg+xml' }), exportFilename('svg'));
+          showToast('SVG downloaded ✓');
+        } catch (err) {
+          showToast(err.message || 'SVG export failed.', true);
+        }
+      }
+
+      async function exportPng() {
+        try {
+          const { svgText, width, height } = await buildExportableSvg();
+
+          // Rasterise the SVG through an <img> onto a canvas.
+          // NOTE: a data: URL is used deliberately — loading the SVG from a
+          // blob: URL taints the canvas in Chrome when the SVG contains
+          // <foreignObject> (which markmap's node labels do), making
+          // canvas.toBlob throw a SecurityError.
+          const img = new Image();
+          const svgDataUrl = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svgText);
+
+          await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = () => reject(new Error('Could not rasterise the SVG.'));
+            img.src = svgDataUrl;
+          });
+
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(width * PNG_SCALE);
+          canvas.height = Math.round(height * PNG_SCALE);
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = EXPORT_BG;
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+          canvas.toBlob((blob) => {
+            if (!blob) {
+              showToast('PNG export failed — try the SVG export instead.', true);
+              return;
+            }
+            downloadBlob(blob, exportFilename('png'));
+            showToast('PNG downloaded ✓');
+          }, 'image/png');
+        } catch (err) {
+          // Some browsers (notably older Safari) refuse to rasterise SVGs
+          // containing <foreignObject>; SVG export always works as a fallback.
+          showToast((err.message || 'PNG export failed.') + ' Try Export SVG.', true);
+        }
+      }
+
+      /* ----------------------------------------------------------
+       * 6. UI HELPERS
+       * -------------------------------------------------------- */
+
+      function updateCharCount() {
+        els.charCount.textContent = `${els.input.value.length.toLocaleString()} chars`;
+      }
+
+      function showToast(message, isError = false) {
+        clearTimeout(toastTimer);
+        els.toast.textContent = message;
+        els.toast.classList.remove('hidden');
+        els.toast.classList.add('toast-enter');
+        els.toast.classList.toggle('text-red-300', isError);
+        els.toast.classList.toggle('text-cream/80', !isError);
+        toastTimer = setTimeout(() => {
+          els.toast.classList.add('hidden');
+          els.toast.classList.remove('toast-enter');
+        }, 2600);
+      }
+
+      function setLayout(key) {
+        if (currentLayout === key) return;
+        currentLayout = key;
+        els.btnLayoutMap.classList.toggle('seg-active', key === 'map');
+        els.btnLayoutTree.classList.toggle('seg-active', key === 'tree');
+        render();
+      }
+
+      /* ----------------------------------------------------------
+       * 7. EVENT WIRING
+       * -------------------------------------------------------- */
+
+      els.input.addEventListener('input', scheduleRender);
+      els.btnGenerate.addEventListener('click', render);
+      els.btnFit.addEventListener('click', () => mm && mm.fit());
+      els.btnSvg.addEventListener('click', exportSvg);
+      els.btnPng.addEventListener('click', exportPng);
+      els.btnLayoutMap.addEventListener('click', () => setLayout('map'));
+      els.btnLayoutTree.addEventListener('click', () => setLayout('tree'));
+
+      els.btnClear.addEventListener('click', () => {
+        els.input.value = '';
+        render();
+        els.input.focus();
+      });
+
+      els.btnExample.addEventListener('click', () => {
+        els.input.value = DEFAULT_MARKDOWN;
+        render();
+      });
+
+      // Cmd/Ctrl+Enter inside the editor regenerates immediately
+      els.input.addEventListener('keydown', (e) => {
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          e.preventDefault();
+          clearTimeout(debounceTimer);
+          render();
+        }
+      });
+
+      // Re-fit the map when the window is resized (e.g. rotating a phone)
+      let resizeTimer = null;
+      window.addEventListener('resize', () => {
+        clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => mm && mm.fit(), 200);
+      });
+
+      /* ----------------------------------------------------------
+       * 8. BOOT
+       * -------------------------------------------------------- */
+
+      // The example note is already in the textarea markup; if the browser
+      // restored a previous session's edits, we render those instead.
+      render();
+    })();
+  </script>
+</body>
+</html>
