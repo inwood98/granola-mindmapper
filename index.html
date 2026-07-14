@@ -563,15 +563,17 @@
         }
       });
 
-      // Re-fit the map whenever the canvas panel's size actually changes.
+      // Re-render the map whenever the canvas panel's size actually changes.
       // A ResizeObserver (rather than window 'resize') also catches the case
-      // where Tailwind's runtime-generated CSS lands *after* the first render
-      // — without this, the initial map is laid out against a zero-height
-      // panel and ends up squashed into a corner.
+      // where Tailwind's runtime-generated CSS lands *after* the first
+      // render: the panel then changes shape under Markmap, whose layout was
+      // computed against the old geometry. A plain mm.fit() is NOT enough to
+      // recover from that (its internal rect is stale) — a full re-render
+      // recomputes node measurements against the real panel size.
       let resizeTimer = null;
       new ResizeObserver(() => {
         clearTimeout(resizeTimer);
-        resizeTimer = setTimeout(() => mm && mm.fit(), 150);
+        resizeTimer = setTimeout(() => mm && render(), 150);
       }).observe(els.svg);
 
       /* ----------------------------------------------------------
