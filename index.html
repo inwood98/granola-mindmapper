@@ -78,6 +78,17 @@
     #md-input::-webkit-scrollbar-thumb { background: #2a2a31; border-radius: 5px; }
     #md-input::-webkit-scrollbar-track { background: transparent; }
 
+    /* Highlight shown while dragging files over the app */
+    body.dragging-file::after {
+      content: 'Drop Markdown files to import';
+      position: fixed; inset: 0; z-index: 50;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px; font-weight: 600; color: #f0cd85;
+      background: rgba(12, 12, 14, 0.82);
+      border: 2px dashed #e8b64c; border-radius: 12px;
+      pointer-events: none;
+    }
+
     /* Toast animation for status messages */
     .toast-enter { animation: toast-in 0.25s ease-out; }
     @keyframes toast-in {
@@ -136,8 +147,10 @@
           <h2 class="text-xs font-medium uppercase tracking-wider text-cream/50">Markdown Notes</h2>
         </div>
         <div class="flex items-center gap-2">
+          <button id="btn-import" class="btn-ghost" title="Import Markdown file(s) — or just drag and drop them anywhere">Import</button>
           <button id="btn-example" class="btn-ghost" title="Restore the example Granola note">Example</button>
           <button id="btn-clear" class="btn-ghost text-red-400/80 hover:text-red-300" title="Clear the workspace">Clear</button>
+          <input id="file-input" type="file" accept=".md,.markdown,.txt,text/*" multiple class="hidden" />
         </div>
       </div>
 
@@ -317,6 +330,8 @@
         btnPng: $('btn-export-png'),
         btnLayoutMap: $('btn-layout-map'),
         btnLayoutTree: $('btn-layout-tree'),
+        btnImport: $('btn-import'),
+        fileInput: $('file-input'),
       };
 
       /* ----------------------------------------------------------
@@ -504,7 +519,38 @@
       }
 
       /* ----------------------------------------------------------
-       * 6. UI HELPERS
+       * 6. IMPORT (file picker & drag-and-drop)
+       * -------------------------------------------------------- */
+
+      /** True for files we're willing to read as Markdown. */
+      function isTextFile(file) {
+        return /\.(md|markdown|txt)$/i.test(file.name) ||
+               (file.type && file.type.startsWith('text/'));
+      }
+
+      /**
+       * Read the given files into the editor (multiple files are joined
+       * with a blank line) and render the result.
+       */
+      async function importFiles(fileList) {
+        const files = [...fileList].filter(isTextFile);
+        if (!files.length) {
+          showToast('Only Markdown / text files can be imported.', true);
+          return;
+        }
+        try {
+          const texts = await Promise.all(files.map((f) => f.text()));
+          els.input.value = texts.join('\n\n');
+          render();
+          showToast(`Imported ${files.length} file${files.length > 1 ? 's' : ''} ✓`);
+        } catch (err) {
+          console.error('Import failed:', err);
+          showToast('Could not read the dropped file(s).', true);
+        }
+      }
+
+      /* ----------------------------------------------------------
+       * 7. UI HELPERS
        * -------------------------------------------------------- */
 
       function updateCharCount() {
@@ -533,8 +579,37 @@
       }
 
       /* ----------------------------------------------------------
-       * 7. EVENT WIRING
+       * 8. EVENT WIRING
        * -------------------------------------------------------- */
+
+      // Import via file picker
+      els.btnImport.addEventListener('click', () => els.fileInput.click());
+      els.fileInput.addEventListener('change', () => {
+        if (els.fileInput.files.length) importFiles(els.fileInput.files);
+        els.fileInput.value = ''; // allow re-importing the same file
+      });
+
+      // Import via drag-and-drop anywhere on the page. dragenter/dragleave
+      // fire on every child element, so track depth to know when the drag
+      // truly leaves the window.
+      let dragDepth = 0;
+      window.addEventListener('dragenter', (e) => {
+        if ([...e.dataTransfer.types].includes('Files')) {
+          dragDepth += 1;
+          document.body.classList.add('dragging-file');
+        }
+      });
+      window.addEventListener('dragleave', () => {
+        dragDepth = Math.max(0, dragDepth - 1);
+        if (!dragDepth) document.body.classList.remove('dragging-file');
+      });
+      window.addEventListener('dragover', (e) => e.preventDefault());
+      window.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dragDepth = 0;
+        document.body.classList.remove('dragging-file');
+        if (e.dataTransfer.files.length) importFiles(e.dataTransfer.files);
+      });
 
       els.input.addEventListener('input', scheduleRender);
       els.btnGenerate.addEventListener('click', render);
@@ -585,7 +660,7 @@
       });
 
       /* ----------------------------------------------------------
-       * 8. BOOT
+       * 9. BOOT
        * -------------------------------------------------------- */
 
       // The example note is already in the textarea markup; if the browser

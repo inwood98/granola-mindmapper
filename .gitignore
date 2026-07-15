@@ -1,2 +1,5 @@
 .claude/
 .DS_Store
+
+# Generated Granola overview — contains meeting content, never publish
+overview.md
